@@ -3,9 +3,12 @@ from enum import Enum
 
 class IfcType(Enum):
     SANITARY_TERMINAL = "IfcSanitaryTerminal"
+    FLOW_SEGMENT = "IfcFlowSegment"
+    WASTE_TERMINAL = "IfcWasteTerminal"
+
     WALL = "IfcWall"
-    SLAB = "IfcSlab"
-    COLUMN = "IfcColumn"
+    #SLAB = "IfcSlab"
+    #COLUMN = "IfcColumn"
 
     @staticmethod
     def from_str(value: str) -> "IfcType":
