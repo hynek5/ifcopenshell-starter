@@ -108,7 +108,6 @@ class Layout:
 
     def create_box_representation(self, dim_x: float, dim_y: float, height: float = 1.0):
         """Create a simple box. Uses wall representation internally."""
-        geometry.add_
         return geometry.add_wall_representation(
             self.file, context=self.body_context,
             length=dim_x, height=height, thickness=dim_y,
