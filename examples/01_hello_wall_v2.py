@@ -1,4 +1,4 @@
-import ifcopenshell
+import os
 import ifcopenshell.api
 import ifcopenshell.api.context as context
 import ifcopenshell.api.geometry as geometry
@@ -60,4 +60,9 @@ geometry.assign_representation(file, product=wall, representation=rep)
 geometry.edit_object_placement(file, product=wall)
 
 # 8. Save
-save_model(file, "01_hello_wall_v2.ifc")
+# Get the project root (one level up from src/)
+PROJECT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+OUTPUT_DIR = os.path.join(PROJECT_DIR, "output")
+os.makedirs(OUTPUT_DIR, exist_ok=True)
+
+save_model(file, os.path.join(OUTPUT_DIR, "01_hello_wall_v2.ifc"))
