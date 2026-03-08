@@ -1,0 +1,10 @@
+id,name,type,loc_x,loc_y,dim_x,dim_y
+1,Toilet,IfcSanitaryTerminal,1.0,1.0,0.7,0.4
+2,Toilet,IfcSanitaryTerminal,3.2,1.0,0.7,0.4
+3,Washbasin,IfcSanitaryTerminal,-0.5,2.5,0.5,0.35
+4,Washbasin,IfcSanitaryTerminal,2.1,2.5,0.5,0.35
+5,Washbasin,IfcSanitaryTerminal,3.2,2.5,0.5,0.35
+6,Drain,IfcWasteTerminal,1.5,3.8,0.25,0.25
+7,Drain,IfcWasteTerminal,2.7,3.8,0.25,0.25
+8,Stack Pipe,IfcFlowSegment,2.1,4.5,0.2,0.2
+9,Shower,IfcSanitaryTerminal,-0.5,3.2,0.4,0.4
