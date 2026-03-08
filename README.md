@@ -1,60 +1,45 @@
-# IfcOpenShell Starter Project
 
-A Python project demonstrating IFC model creation, traversal, and manipulation
-using the IfcOpenShell API.
 
-## Setup
+## Bathroom Pipeline (build_bathroom + calc_flow)
 
-```bash
-# Create virtual environment
-python -m venv venv
+Two scripts work together to build a bathroom IFC model and calculate drain load.
 
-# Activate (Windows Git Bash)
-source venv/Scripts/activate
+### Input files (in project root)
 
-# Activate (Linux/Mac)
-source venv/bin/activate
+| File | Purpose |
+|---|---|
+| `layout.csv` | Bathroom elements — id, name, IFC type, position (x/y), dimensions |
+| `connections.csv` | Drain connections — `from_id,to_id` pairs |
+| `uhc_library.csv` | UHC (Unit Hydraulic Capacity) lookup by device name |
 
-# Install dependencies
-pip install -r requirements.txt
-```
+### Step 1 — Build the IFC model
 
-## Project Structure
-
-```
-ifcopenshell-starter/
-├── src/
-│   ├── 01_hello_wall.py          # Create a minimal IFC with one wall
-│   ├── 02_spatial_hierarchy.py   # Full Project→Site→Building→Storey→Elements
-│   ├── 03_properties.py          # Adding property sets to elements
-│   ├── 04_relationships.py       # Traversing relationships (forward + inverse)
-│   ├── 05_query_model.py         # Loading and querying an existing IFC file
-│   └── utils.py                  # Shared helper functions
-├── output/                       # Generated .ifc files go here
-├── requirements.txt
-└── README.md
-```
-
-## Running
+Reads the three CSVs and writes an IFC4 file with all elements, pipe geometry, and `Pset_SanitaryLoad` properties.
 
 ```bash
-# Run scripts in order — each builds on concepts from the previous
-python src/01_hello_wall.py
-python src/02_spatial_hierarchy.py
-python src/03_properties.py
-python src/04_relationships.py
-python src/05_query_model.py
+python build_bathroom.py              # outputs output.ifc
+python build_bathroom.py my_bath.ifc  # custom output path
 ```
 
-Each script writes an `.ifc` file to `output/` that you can open in:
-- BlenderBIM / Bonsai
-- IFC Open Viewer (browser extension)
-- Any IFC-compatible viewer
+### Step 2 — Calculate drain load
 
-## Key Concepts
+Loads the IFC, finds the Stack Pipe (element with no outgoing connection), walks upstream via `IfcRelConnectsElements`, sums UHC, and prints a load report with recommended pipe diameter.
 
-- **Entities**: IFC objects like IfcWall, IfcBuilding, IfcSlab
-- **Relationships**: Separate objects that link entities (IfcRelAggregates, etc.)
-- **Property Sets**: Key-value metadata attached via IfcRelDefinesByProperties
-- **Spatial Hierarchy**: Project → Site → Building → Storey → Elements
-- **Inverse Attributes**: API-level reverse lookups (e.g., wall.ContainedInStructure)
+```bash
+python calc_flow.py              # reads output.ifc by default
+python calc_flow.py my_bath.ifc  # custom IFC path
+```
+
+Example output:
+```
+--- Load Report ---
+
+Toilet: 4 UHC
+Washbasin: 3 UHC
+...
+---------------------------
+Total Load on Stack Pipe: 22 UHC
+Minimum Recommended Diameter: 75mm (Based on simple table)
+```
+
+---

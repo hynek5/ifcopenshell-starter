@@ -1,7 +1,7 @@
 """
 calc_flow.py — Part 3: The Engineer.
 
-Loads an IFC file produced by main.py, finds the Stack Pipe (element with no
+Loads an IFC file produced by build_bathroom.py, finds the Stack Pipe (element with no
 IfcRelConnectsElements where it is RelatingElement), backtracks via IfcElement.ConnectedFrom
 to collect all elements that drain into it, sums their UHC from Pset_SanitaryLoad,
 and prints a Load Report with recommended pipe diameter.
