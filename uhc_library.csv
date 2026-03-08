@@ -1,0 +1,6 @@
+Device,UHC,Type
+Washbasin,1,IfcSanitaryTerminal
+Toilet,6,IfcSanitaryTerminal
+Shower,2,IfcSanitaryTerminal
+Pipe,0,IfcFlowSegment
+Drain,0,IfcWasteTerminal
