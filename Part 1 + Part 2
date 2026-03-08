@@ -1,0 +1,566 @@
+import csv
+import io
+import sys
+import random
+
+
+import ifcopenshell
+import ifcopenshell.api.root as root
+import ifcopenshell.api.unit as unit
+import ifcopenshell.api.context as context
+import ifcopenshell.api.aggregate as aggregate
+import ifcopenshell.api.spatial as spatial
+import ifcopenshell.api.geometry as geometry
+import ifcopenshell.api.style as style
+import ifcopenshell.guid as guid # Import guid for generating GlobalId
+
+
+
+
+# ---------------------------------------------------------------------------
+# Step 1 - Data classes
+# ---------------------------------------------------------------------------
+
+
+class Element:
+    """One row from the CSV."""
+    def __init__(self, name, uhc, ifc_type, loc_x, loc_y, loc_z, dim_x, dim_y):
+        self.name = name
+        self.uhc = float(uhc) # Changed to float to correctly handle decimal UHC values
+        self.ifc_type = ifc_type
+        self.loc_x = float(loc_x)
+        self.loc_y = float(loc_y)
+        self.loc_z = float(loc_z)
+        self.dim_x = float(dim_x)
+        self.dim_y = float(dim_y)
+
+
+
+
+# ---------------------------------------------------------------------------
+# Step 2 - CSV data (inline) and parser
+# ---------------------------------------------------------------------------
+
+
+CSV_DATA = """\
+name,uhc,type,loc_x,loc_y,loc_z,dim_x,dim_y
+Toilet,6,IfcSanitaryTerminal,1.25,1.0,0.0,0.7,0.4
+Washbasin,2,IfcSanitaryTerminal,1.0,10.5,1.0,0.2,0.4
+WashbasinPipe,2,IfcFlowSegment,1.0,5.7,0.75,0.2,4.8
+Drain,2,IfcWasteTerminal,1.25,5.5,0.0,0.2,0.4
+MainPipe,6,IfcFlowSegment,0.5,1.0,-0.5,0.2,5.0
+ToiletBranch,1,IfcFlowSegment,0.7,1.0,0.0,0.55,0.2
+DrainBranch,1,IfcFlowSegment,0.7,5.5,0.0,0.55,0.2
+Shower,6,IfcSanitaryTerminal,0.45,-1.8,0.5,0.8,0.8
+ShowerPipe,1,IfcFlowSegment,0.75,-1.0,0.25,0.2,2.0
+"""
+
+
+def parse_csv(text):
+    elements = []
+    reader = csv.DictReader(io.StringIO(text))
+    for row in reader:
+        element = Element(
+            name=row["name"].strip(),
+            uhc=row["uhc"],
+            ifc_type=row["type"].strip(),
+            loc_x=row["loc_x"],
+            loc_y=row["loc_y"],
+            loc_z=row["loc_z"],
+            dim_x=row["dim_x"],
+            dim_y=row["dim_y"],
+        )
+        elements.append(element)
+    return elements
+
+
+
+
+# ---------------------------------------------------------------------------
+# Step 3 - Build IFC IFC model
+# ---------------------------------------------------------------------------
+
+
+def create_port_and_assign_to_element(ifc_file, owner_history, parent_element_entity, port_name, port_x, port_y, port_z, flow_direction, port_to_element_name_map=None):
+    """
+    Creates an IfcDistributionPort and assigns it to a parent element.
+    """
+    port_placement = ifc_file.createIfcLocalPlacement(
+        parent_element_entity.ObjectPlacement,
+        ifc_file.createIfcAxis2Placement3D(
+            ifc_file.createIfcCartesianPoint((port_x, port_y, port_z))
+        )
+    )
+
+
+    # Create IfcDistributionPort directly
+    port_entity = ifc_file.createIfcDistributionPort(
+        guid.new(), # GlobalId
+        owner_history, # OwnerHistory
+        port_name, # Name
+        None, # Description
+        None, # ObjectType
+        port_placement, # ObjectPlacement
+        None, # Representation
+        flow_direction, # FlowDirection attribute
+        None # PredefinedType
+    )
+
+
+    # Add FlowDirection property to the port's Pset_PortProperties
+    ifc_text_value = ifc_file.createIfcLabel(flow_direction)
+    ifc_property_single_value = ifc_file.createIfcPropertySingleValue('FlowDirection', None, ifc_text_value, None)
+   
+    port_property_set = ifc_file.createIfcPropertySet(
+        guid.new(),
+        owner_history,
+        'Pset_PortProperties',
+        None,
+        [ifc_property_single_value]
+    )
+    ifc_file.createIfcRelDefinesByProperties(
+        guid.new(),
+        owner_history,
+        None,
+        None,
+        [port_entity],
+        port_property_set
+    )
+    print(f"  Added 'FlowDirection' property ({flow_direction}) to port {port_name}")
+
+
+
+
+    # Create IfcRelConnectsPortToElement directly
+    ifc_file.createIfcRelConnectsPortToElement(
+        guid.new(), # GlobalId
+        owner_history, # OwnerHistory
+        f"Connects {port_name} to {parent_element_entity.Name}", # Name
+        None, # Description
+        port_entity, # RelatingPort
+        parent_element_entity # RelatedElement
+    )
+    if port_to_element_name_map is not None:
+        port_to_element_name_map[port_entity] = parent_element_entity.Name
+    return port_entity
+
+
+
+
+def build_ifc(elements, output_path):
+    # Create empty IFC4 file
+    ifc_file = ifcopenshell.file(schema="IFC4")
+
+
+    # Project + units
+    project = root.create_entity(ifc_file, ifc_class="IfcProject", name="My Project")
+    unit.assign_unit(ifc_file)
+
+
+    # Representation context (needed for geometry)
+    body_context = context.add_context(
+        ifc_file,
+        context_type="Model",
+        context_identifier="Body",
+        target_view="MODEL_VIEW",
+    )
+
+
+    # Spatial hierarchy: Project → Site → Building → Storey
+    site = root.create_entity(ifc_file, ifc_class="IfcSite", name="Site")
+    building = root.create_entity(ifc_file, ifc_class="IfcBuilding", name="Building")
+    storey = root.create_entity(ifc_file, ifc_class="IfcBuildingStorey", name="Ground Floor")
+
+
+    aggregate.assign_object(ifc_file, relating_object=project, products=[site])
+    aggregate.assign_object(ifc_file, relating_object=site, products=[building])
+    aggregate.assign_object(ifc_file, relating_object=building, products=[storey])
+
+
+    # Create OwnerHistory once for all new entities
+    owner_history = ifc_file.createIfcOwnerHistory(
+        ifc_file.createIfcPersonAndOrganization(
+            ifc_file.createIfcPerson('Unnamed'),
+            ifc_file.createIfcOrganization('Unknown')
+        ),
+        ifc_file.createIfcApplication(
+            ifc_file.createIfcOrganization('Unknown'),
+            '1.0',
+            'ifc_from_csv.py',
+            'ifc_from_csv'
+        )
+    )
+
+
+    # Define colours and create styles once
+    green_rgb = ifc_file.createIfcColourRgb(None, 0.0, 1.0, 0.0)
+    blue_rgb = ifc_file.createIfcColourRgb(None, 0.0, 0.0, 1.0)
+    brown_rgb = ifc_file.createIfcColourRgb(None, 0.6, 0.3, 0.0)
+
+
+    green_shading = ifc_file.createIfcSurfaceStyleShading(green_rgb, 0.0)
+    blue_shading = ifc_file.createIfcSurfaceStyleShading(blue_rgb, 0.0)
+    brown_shading = ifc_file.createIfcSurfaceStyleShading(brown_rgb, 0.0)
+
+
+    green_style = ifc_file.createIfcSurfaceStyle("GreenStyle", "BOTH", [green_shading])
+    blue_style = ifc_file.createIfcSurfaceStyle("BlueStyle", "BOTH", [blue_shading])
+    brown_style = ifc_file.createIfcSurfaceStyle("BrownStyle", "BOTH", [brown_shading])
+
+
+    # Dictionary to store created entities for later use (e.g., ports)
+    created_entities = {}
+    element_connections = {element.name: set() for element in elements}
+    port_to_element_name_map = {}
+
+
+    # Load UHC data from CSV
+    uhc_data_map = {}
+    uhc_csv_path = 'uhc_library.csv' # Assuming the file is in the same directory
+    try:
+        with open(uhc_csv_path, 'r') as file:
+            uhc_csv_data = file.read()
+        reader = csv.DictReader(io.StringIO(uhc_csv_data))
+        for row in reader:
+            element_name_uhc = row["appliance"].strip()
+            detail_name_uhc = row["detail"].strip()
+            if detail_name_uhc:
+                key = f"{element_name_uhc}, {detail_name_uhc}"
+            else:
+                key = element_name_uhc
+            uhc_value = float(row["uhc"])
+            uhc_data_map[key] = uhc_value
+        print(f"  Loaded UHC data from {uhc_csv_path}")
+    except FileNotFoundError:
+        print(f"  Warning: UHC library file '{uhc_csv_path}' not found. UHC values will not be updated from library.")
+    except KeyError as e:
+        print(f"  Warning: Missing expected column in UHC library CSV: {e}. UHC values may not be updated correctly.")
+    except ValueError as e:
+        print(f"  Warning: Error parsing UHC value in UHC library CSV: {e}. UHC values may not be updated correctly.")
+
+
+
+
+    # Define mapping from CSV names to uhc_data_map keys
+    element_name_map = {
+        'Toilet': 'Water closet',
+        'Washbasin': 'Lavatory, Residential',
+        'Shower': 'Shower, Residential'
+    }
+
+
+    # Iterate through elements to update UHC values
+    for element in elements:
+        if element.ifc_type in ('IfcSanitaryTerminal', 'IfcWasteTerminal'):
+            if element.name == 'Drain':
+                element.uhc = 2.0 # Assign a default UHC for Drain
+                print(f"  Assigned default UHC for {element.name} to {element.uhc}")
+            else:
+                mapped_name = element_name_map.get(element.name)
+                if mapped_name and mapped_name in uhc_data_map:
+                    element.uhc = uhc_data_map[mapped_name]
+                    print(f"  Updated UHC for {element.name} to {element.uhc}")
+
+
+
+
+    # Create one IFC entity per element
+    for element in elements:
+        entity = root.create_entity(ifc_file, ifc_class=element.ifc_type, name=element.name)
+        entity.OwnerHistory = owner_history
+        created_entities[element.name] = entity
+
+
+        rep = geometry.add_wall_representation(
+            ifc_file,
+            context=body_context,
+            length=element.dim_x,
+            height=1.0,
+            thickness=element.dim_y,
+        )
+        geometry.assign_representation(ifc_file, product=entity, representation=rep)
+
+
+        loc_x = element.loc_x
+        loc_y = element.loc_y
+        loc_z = element.loc_z
+
+
+        geometry.edit_object_placement(
+            ifc_file,
+            product=entity,
+            matrix=[
+                [1.0, 0.0, 0.0, loc_x],
+                [0.0, 1.0, 0.0, loc_y],
+                [0.0, 0.0, 1.0, loc_z],
+                [0.0, 0.0, 0.0, 1.0],
+            ],
+        )
+
+
+        if element.name in ("Shower", "Washbasin"):
+            style.assign_representation_styles(ifc_file, entity, [green_style])
+        elif element.name in ("Toilet", "Drain"):
+            style.assign_representation_styles(ifc_file, entity, [blue_style])
+        elif element.ifc_type == "IfcFlowSegment":
+            style.assign_representation_styles(ifc_file, entity, [brown_style])
+
+
+        # Add UHC property
+        uhc_value = ifc_file.createIfcReal(element.uhc)
+        uhc_property = ifc_file.createIfcPropertySingleValue('UHC', None, uhc_value, None)
+        uhc_property_set = ifc_file.createIfcPropertySet(
+            guid.new(),
+            owner_history,
+            'Pset_General',
+            None,
+            [uhc_property]
+        )
+        ifc_file.createIfcRelDefinesByProperties(
+            guid.new(),
+            owner_history,
+            None,
+            None,
+            [entity],
+            uhc_property_set
+        )
+        print(f"  Added 'UHC' property ({element.uhc}) to {element.name}")
+
+
+        spatial.assign_container(ifc_file, relating_structure=storey, products=[entity])
+        print(f"  Created: {element.name} ({element.ifc_type})")
+
+
+    # Create ports and connections
+    if "Shower" in created_entities and "ShowerPipe" in created_entities:
+        shower_entity = created_entities["Shower"]
+        shower_pipe_entity = created_entities["ShowerPipe"]
+
+
+        shower_connection_port = create_port_and_assign_to_element(
+            ifc_file, owner_history, shower_entity, "ShowerConnectionPort", 0.3, 0.8, 0.0, "SOURCE", port_to_element_name_map
+        )
+        shower_pipe_connection_port_inlet = create_port_and_assign_to_element(
+            ifc_file, owner_history, shower_pipe_entity, "ShowerPipeConnectionPort_Inlet", 0.0, 0.0, 0.25, "SINK", port_to_element_name_map
+        )
+        ifc_file.createIfcRelConnectsPorts(
+            guid.new(), owner_history, "Connects Shower and ShowerPipe Inlet Ports", None, shower_connection_port, shower_pipe_connection_port_inlet
+        )
+        print("  Connected Shower and ShowerPipe Inlet ports with IfcRelConnectsPorts")
+        relating_element_name = port_to_element_name_map[shower_connection_port]
+        related_element_name = port_to_element_name_map[shower_pipe_connection_port_inlet]
+        element_connections[relating_element_name].add(related_element_name)
+        element_connections[related_element_name].add(relating_element_name)
+
+
+
+
+        shower_pipe_connection_port_outlet = create_port_and_assign_to_element(
+            ifc_file, owner_history, shower_pipe_entity, "ShowerPipeConnectionPort_Outlet", 0.0, 2.0, 0.25, "SOURCE", port_to_element_name_map
+        )
+
+
+        if "ToiletBranch" in created_entities:
+            toilet_branch_entity = created_entities["ToiletBranch"]
+
+
+            toilet_branch_sideinlet_port = create_port_and_assign_to_element(
+                ifc_file, owner_history, toilet_branch_entity, "ToiletBranch_SideInlet", 0.05, 0.0, 0.0, "SINK", port_to_element_name_map
+            )
+            ifc_file.createIfcRelConnectsPorts(
+                guid.new(), owner_history, "Connects ShowerPipe Outlet to ToiletBranch SideInlet", None, shower_pipe_connection_port_outlet, toilet_branch_sideinlet_port
+            )
+            print("  Connected ShowerPipe Outlet and ToiletBranch SideInlet ports with IfcRelConnectsPorts")
+            relating_element_name = port_to_element_name_map[shower_pipe_connection_port_outlet]
+            related_element_name = port_to_element_name_map[toilet_branch_sideinlet_port]
+            element_connections[relating_element_name].add(related_element_name)
+            element_connections[related_element_name].add(relating_element_name)
+
+
+    if "Toilet" in created_entities and "ToiletBranch" in created_entities:
+        toilet_entity = created_entities["Toilet"]
+        toilet_branch_entity = created_entities["ToiletBranch"]
+
+
+        toilet_sideoutlet_port = create_port_and_assign_to_element(
+            ifc_file, owner_history, toilet_entity, "Toilet_SideOutlet", -0.25, 0.2, 0.0, "SOURCE", port_to_element_name_map
+        )
+        toilet_branch_inlet_port = create_port_and_assign_to_element(
+            ifc_file, owner_history, toilet_branch_entity, "ToiletBranch_Inlet", 0.0, 0.0, 0.0, "SINK", port_to_element_name_map
+        )
+        ifc_file.createIfcRelConnectsPorts(
+            guid.new(), owner_history, "Connects Toilet SideOutlet and ToiletBranch Inlet", None, toilet_sideoutlet_port, toilet_branch_inlet_port
+        )
+        print("  Connected Toilet SideOutlet and ToiletBranch Inlet ports with IfcRelConnectsPorts")
+        relating_element_name = port_to_element_name_map[toilet_sideoutlet_port]
+        related_element_name = port_to_element_name_map[toilet_branch_inlet_port]
+        element_connections[relating_element_name].add(related_element_name)
+        element_connections[related_element_name].add(relating_element_name)
+
+
+    if "ToiletBranch" in created_entities and "MainPipe" in created_entities:
+        toilet_branch_entity = created_entities["ToiletBranch"]
+        main_pipe_entity = created_entities["MainPipe"]
+
+
+        toilet_branch_outlet_port = create_port_and_assign_to_element(
+            ifc_file, owner_history, toilet_branch_entity, "ToiletBranch_Outlet", 0.55, 0.1, 0.0, "SOURCE", port_to_element_name_map
+        )
+        main_pipe_inlet_port = create_port_and_assign_to_element(
+            ifc_file, owner_history, main_pipe_entity, "MainPipe_ToiletBranch_Inlet", 0.0, 0.0, 0.5, "SINK", port_to_element_name_map
+        )
+        ifc_file.createIfcRelConnectsPorts(
+            guid.new(), owner_history, "Connects ToiletBranch Outlet to MainPipe Inlet", None, toilet_branch_outlet_port, main_pipe_inlet_port
+        )
+        print("  Connected ToiletBranch Outlet and MainPipe Inlet ports with IfcRelConnectsPorts")
+        relating_element_name = port_to_element_name_map[toilet_branch_outlet_port]
+        related_element_name = port_to_element_name_map[main_pipe_inlet_port]
+        element_connections[relating_element_name].add(related_element_name)
+        element_connections[related_element_name].add(relating_element_name)
+
+
+    if "Washbasin" in created_entities and "WashbasinPipe" in created_entities:
+        washbasin_entity = created_entities["Washbasin"]
+        washbasin_pipe_entity = created_entities["WashbasinPipe"]
+
+
+        washbasin_sideoutlet_port = create_port_and_assign_to_element(
+            ifc_file, owner_history, washbasin_entity, "Washbasin_SideOutlet", 0.1, 0.2, 0.25, "SOURCE", port_to_element_name_map
+        )
+        washbasin_pipe_inlet_port = create_port_and_assign_to_element(
+            ifc_file, owner_history, washbasin_pipe_entity, "WashbasinPipe_Inlet", 0.1, 4.8, 0.5, "SINK", port_to_element_name_map
+        )
+        ifc_file.createIfcRelConnectsPorts(
+            guid.new(), owner_history, "Connects Washbasin SideOutlet and WashbasinPipe Inlet", None, washbasin_sideoutlet_port, washbasin_pipe_inlet_port
+        )
+        print("  Connected Washbasin SideOutlet and WashbasinPipe Inlet ports with IfcRelConnectsPorts")
+        relating_element_name = port_to_element_name_map[washbasin_sideoutlet_port]
+        related_element_name = port_to_element_name_map[washbasin_pipe_inlet_port]
+        element_connections[relating_element_name].add(related_element_name)
+        element_connections[related_element_name].add(relating_element_name)
+
+
+    if "WashbasinPipe" in created_entities and "DrainBranch" in created_entities:
+        washbasin_pipe_entity = created_entities["WashbasinPipe"]
+        drain_branch_entity = created_entities["DrainBranch"]
+
+
+        washbasin_pipe_outlet_port = create_port_and_assign_to_element(
+            ifc_file, owner_history, washbasin_pipe_entity, "WashbasinPipe_Outlet", 0.1, 0.0, 0.25, "SOURCE", port_to_element_name_map
+        )
+        drain_branch_sideinlet_port = create_port_and_assign_to_element(
+            ifc_file, owner_history, drain_branch_entity, "DrainBranch_SideInlet", 0.4, 0.2, 1.0, "SINK", port_to_element_name_map
+        )
+        ifc_file.createIfcRelConnectsPorts(
+            guid.new(), owner_history, "Connects WashbasinPipe Outlet and DrainBranch SideInlet", None, washbasin_pipe_outlet_port, drain_branch_sideinlet_port
+        )
+        print("  Connected WashbasinPipe Outlet and DrainBranch SideInlet ports with IfcRelConnectsPorts")
+        relating_element_name = port_to_element_name_map[washbasin_pipe_outlet_port]
+        related_element_name = port_to_element_name_map[drain_branch_sideinlet_port]
+        element_connections[relating_element_name].add(related_element_name)
+        element_connections[related_element_name].add(relating_element_name)
+
+
+    if "Drain" in created_entities and "DrainBranch" in created_entities:
+        drain_entity = created_entities["Drain"]
+        drain_branch_entity = created_entities["DrainBranch"]
+
+
+        drain_sideoutlet_port = create_port_and_assign_to_element(
+            ifc_file, owner_history, drain_entity, "Drain_SideOutlet", 0.0, 0.1, 0.0, "SOURCE", port_to_element_name_map
+        )
+        drain_branch_inlet_port = create_port_and_assign_to_element(
+            ifc_file, owner_history, drain_branch_entity, "DrainBranch_Inlet", 0.55, 0.1, 0.0, "SINK", port_to_element_name_map
+        )
+        ifc_file.createIfcRelConnectsPorts(
+            guid.new(), owner_history, "Connects Drain SideOutlet and DrainBranch Inlet", None, drain_sideoutlet_port, drain_branch_inlet_port
+        )
+        print("  Connected Drain SideOutlet and DrainBranch Inlet ports with IfcRelConnectsPorts")
+        relating_element_name = port_to_element_name_map[drain_sideoutlet_port]
+        related_element_name = port_to_element_name_map[drain_branch_inlet_port]
+        element_connections[relating_element_name].add(related_element_name)
+        element_connections[related_element_name].add(relating_element_name)
+
+
+    if "DrainBranch" in created_entities and "MainPipe" in created_entities:
+        drain_branch_entity = created_entities["DrainBranch"]
+        main_pipe_entity = created_entities["MainPipe"]
+
+
+        drain_branch_outlet_port = create_port_and_assign_to_element(
+            ifc_file, owner_history, drain_branch_entity, "DrainBranch_Outlet", 0.0, 0.1, 0.5, "SOURCE", port_to_element_name_map
+        )
+        main_pipe_inlet_port = create_port_and_assign_to_element(
+            ifc_file, owner_history, main_pipe_entity, "MainPipe_DrainBranch_Inlet", 0.2, 4.5, 0.5, "SINK", port_to_element_name_map
+        )
+        ifc_file.createIfcRelConnectsPorts(
+            guid.new(), owner_history, "Connects DrainBranch Outlet and MainPipe SideInlet", None, drain_branch_outlet_port, main_pipe_inlet_port
+        )
+        print("  Connected DrainBranch Outlet and MainPipe SideInlet ports with IfcRelConnectsPorts")
+        relating_element_name = port_to_element_name_map[drain_branch_outlet_port]
+        related_element_name = port_to_element_name_map[main_pipe_inlet_port]
+        element_connections[relating_element_name].add(related_element_name)
+        element_connections[related_element_name].add(relating_element_name)
+
+
+    if "MainPipe" in created_entities:
+        main_pipe_entity = created_entities["MainPipe"]
+        main_pipe_outlet_port = create_port_and_assign_to_element(
+            ifc_file, owner_history, main_pipe_entity, "MainPipe_Outlet", 0.1, 5.0, 0.5, "SOURCE", port_to_element_name_map
+        )
+        print("  Created MainPipe_Outlet port")
+        element_connections[main_pipe_entity.Name].add("MainPipe_Outlet")
+
+
+    # Assign 'ConnectedToID' Property Set
+    for element_name, entity in created_entities.items():
+        if element_name in element_connections and len(element_connections[element_name]) > 0:
+            connected_names = ",".join(sorted(list(element_connections[element_name])))
+
+
+            ifc_text_value = ifc_file.createIfcText(connected_names)
+            ifc_property_single_value = ifc_file.createIfcPropertySingleValue('ConnectedToID', None, ifc_text_value, None)
+
+
+            connection_property_set = ifc_file.createIfcPropertySet(
+                guid.new(),
+                owner_history,
+                'Pset_ConnectionData',
+                None,
+                [ifc_property_single_value]
+            )
+
+
+            ifc_file.createIfcRelDefinesByProperties(
+                guid.new(),
+                owner_history,
+                None,
+                None,
+                [entity],
+                connection_property_set
+            )
+            print(f"  Assigned 'Pset_ConnectionData' (ConnectedToID: {connected_names}) to {element_name}")
+
+
+    ifc_file.write(output_path)
+    print(f"\nSaved: {output_path}")
+
+
+
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+
+
+if __name__ == "__main__":
+    output_ifc = sys.argv[1] if len(sys.argv) == 2 else "output.ifc"
+
+
+    print("Using inline CSV data")
+    elements = parse_csv(CSV_DATA)
+    print(f"Found {len(elements)} elements\n")
+
+
+    build_ifc(elements, output_ifc)
+
